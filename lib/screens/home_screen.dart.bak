@@ -1,0 +1,1935 @@
+import 'package:flutter/material.dart';
+import 'package:flutter_map/flutter_map.dart';
+import 'package:latlong2/latlong.dart';
+import 'package:flutter_application_1/models/station.dart';
+import 'package:flutter_application_1/models/product.dart';
+import 'package:flutter_application_1/models/service.dart';
+import 'package:flutter_application_1/models/location.dart';
+import 'package:flutter_application_1/screens/booking_confirmation_screen.dart';
+import 'package:flutter_application_1/screens/map_content_wrapper.dart';
+import 'package:flutter_application_1/screens/map_screen.dart';
+import 'package:flutter_application_1/screens/notifications_screen.dart';
+import 'package:flutter_application_1/screens/payment_screen.dart';
+import 'package:flutter_application_1/screens/payment_confirmation_screen.dart';
+import 'package:flutter_application_1/screens/user_settings_screen.dart';
+import 'package:flutter_application_1/screens/service_booking_confirmation_screen.dart';
+import 'package:flutter_application_1/screens/order_confirmation_screen.dart';
+import 'package:flutter_application_1/services/api_service.dart';
+import '../models/user.dart';
+import '../providers/admin_provider.dart';
+import '../providers/transaction_provider.dart';
+import '../models/transaction.dart';
+import 'package:provider/provider.dart';
+import '../models/charging_station.dart';
+import '../models/vehicle.dart';
+
+class HomeScreen extends StatefulWidget {
+  final User currentUser;
+
+  const HomeScreen({Key? key, required this.currentUser}) : super(key: key);
+
+  @override
+  State<HomeScreen> createState() => _HomeScreenState();
+}
+
+class _HomeScreenState extends State<HomeScreen> {
+  int _selectedIndex = 0;
+  String _selectedFilter = 'All';
+  int _unreadNotificationsCount = 2; // Mock count, in a real app this would be fetched from a service
+  String _searchQuery = '';
+  final TextEditingController _searchController = TextEditingController();
+
+  // Mock data for nearby stations
+  final List<Map<String, dynamic>> _nearbyStations = [
+    {
+      'name': 'Green Volt Station #1',
+      'distance': '0.5 km',
+      'type': 'DC Fast Charger',
+      'available': true,
+      'price': '\$0.35/kWh',
+      'rating': 4.8,
+      'image': 'https://images.unsplash.com/photo-1593941707882-a5bba14938c7?q=80&w=300&auto=format&fit=crop',
+    },
+    {
+      'name': 'City Center EV Hub',
+      'distance': '1.2 km',
+      'type': 'Level 2 Charger',
+      'available': true,
+      'price': '\$0.25/kWh',
+      'rating': 4.5,
+      'image': 'https://images.unsplash.com/photo-1558427400-bc691467a8a9?q=80&w=300&auto=format&fit=crop',
+    },
+    {
+      'name': 'Westside Mall Charging',
+      'distance': '2.3 km',
+      'type': 'DC Fast Charger',
+      'available': false,
+      'price': '\$0.40/kWh',
+      'rating': 4.2,
+      'image': 'https://images.unsplash.com/photo-1568605118966-5a3e2c3e0a5d?q=80&w=300&auto=format&fit=crop',
+    },
+    {
+      'name': 'Downtown Supercharger',
+      'distance': '3.1 km',
+      'type': 'Tesla Supercharger',
+      'available': true,
+      'price': '\$0.45/kWh',
+      'rating': 4.9,
+      'image': 'https://images.unsplash.com/photo-1558427400-bc691467a8a9?q=80&w=300&auto=format&fit=crop',
+    },
+  ];
+
+  final ApiService _apiService = ApiService();
+  List<Map<String, dynamic>> _products = [];
+  List<Service> _services = [];
+  List<StoreLocation> _locations = [];
+  List<Map<String, dynamic>> _cartItems = [];
+  bool _isLoading = false;
+  MapController _mapController = MapController();
+  LatLng _defaultLocation = LatLng(12.9716, 77.5946); // Default to Bangalore
+
+  // Mock vehicle for testing
+  final Vehicle _mockVehicle = Vehicle(
+    id: '1',
+    make: 'Tesla',
+    model: 'Model 3',
+    licensePlate: 'EV123',
+    batteryCapacity: '75',
+    chargerType: 'Type 2',
+    imageUrl: 'assets/images/tesla_model3.png',
+    year: 2022,
+  );
+
+  Future<Map<String, dynamic>?> _showTimeSlotPicker(BuildContext context) async {
+    DateTime selectedDate = DateTime.now();
+    TimeOfDay selectedTime = TimeOfDay.now();
+    int selectedDuration = 30; // Default 30 minutes
+    double costPerKwh = 0.35; // Default cost per kWh
+    double powerKw = 50; // Default power in kW
+
+    return showDialog<Map<String, dynamic>>(
+      context: context,
+      builder: (BuildContext context) {
+        double costForDuration = (costPerKwh * powerKw * selectedDuration) / 60;
+
+        return StatefulBuilder(
+          builder: (context, setState) {
+            return AlertDialog(
+              title: const Text('Select Time Slot'),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  ListTile(
+                    title: const Text('Date'),
+                    subtitle: Text(
+                      '${selectedDate.day}/${selectedDate.month}/${selectedDate.year}',
+                    ),
+                    trailing: const Icon(Icons.calendar_today),
+                    onTap: () async {
+                      final DateTime? picked = await showDatePicker(
+                        context: context,
+                        initialDate: selectedDate,
+                        firstDate: DateTime.now(),
+                        lastDate: DateTime.now().add(const Duration(days: 30)),
+                      );
+                      if (picked != null) {
+                        setState(() {
+                          selectedDate = picked;
+                        });
+                      }
+                    },
+                  ),
+                  ListTile(
+                    title: const Text('Time'),
+                    subtitle: Text(selectedTime.format(context)),
+                    trailing: const Icon(Icons.access_time),
+                    onTap: () async {
+                      final TimeOfDay? picked = await showTimePicker(
+                        context: context,
+                        initialTime: selectedTime,
+                      );
+                      if (picked != null) {
+                        setState(() {
+                          selectedTime = picked;
+                        });
+                      }
+                    },
+                  ),
+                  ListTile(
+                    title: const Text('Duration'),
+                    subtitle: Text('$selectedDuration minutes'),
+                    trailing: DropdownButton<int>(
+                      value: selectedDuration,
+                      items: [30, 60, 90, 120].map((int value) {
+                        return DropdownMenuItem<int>(
+                          value: value,
+                          child: Text('$value min'),
+                        );
+                      }).toList(),
+                      onChanged: (int? newValue) {
+                        if (newValue != null) {
+                          setState(() {
+                            selectedDuration = newValue;
+                            costForDuration = (costPerKwh * powerKw * selectedDuration) / 60;
+                          });
+                        }
+                      },
+                    ),
+                  ),
+                  const Divider(),
+                  ListTile(
+                    title: const Text('Estimated Cost'),
+                    trailing: Text(
+                      '\$${costForDuration.toStringAsFixed(2)}',
+                      style: const TextStyle(
+                        fontWeight: FontWeight.bold,
+                        fontSize: 16,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(context),
+                  child: const Text('Cancel'),
+                ),
+                ElevatedButton(
+                  onPressed: () {
+                    Navigator.pop(context);
+                    // Show payment screen
+                    Navigator.of(context).push(
+                      MaterialPageRoute(
+                        builder: (context) => PaymentScreen(
+                          initialAmount: costForDuration,
+                          description: 'Charging session at Green Volt Station #1',
+                          stationId: '1',
+                          stationName: 'Green Volt Station #1',
+                          transactionType: TransactionType.charging,
+                          onPaymentSuccess: (double amount, String transactionId, String paymentMethod) {
+                            // Show payment confirmation
+                            Navigator.of(context).pushReplacement(
+                              MaterialPageRoute(
+                                builder: (context) => PaymentConfirmationScreen(
+                                  amount: amount,
+                                  transactionId: transactionId,
+                                  paymentDate: DateTime.now(),
+                                  paymentMethod: paymentMethod,
+                                  onContinue: () {
+                                    // Navigate to booking confirmation
+                                    Navigator.of(context).pushReplacement(
+                                      MaterialPageRoute(
+                                        builder: (context) => BookingConfirmationScreen(
+                                          station: Station(
+                                            id: '1',
+                                            name: 'Green Volt Station #1',
+                                            address: '123 Main St',
+                                            latitude: 12.9716,
+                                            longitude: 77.5946,
+                                            imageUrl: '',
+                                            availableChargerTypes: ['Type 2', 'CCS'],
+                                            totalChargers: 1,
+                                            availableChargers: 1,
+                                            rating: 4.5,
+                                            reviewCount: 0,
+                                            amenities: ['Parking', 'Restroom', 'WiFi'],
+                                            operatingHours: '24/7',
+                                            available: true,
+                                            type: 'EV Charger',
+                                            distance: '0.5 km',
+                                            price: '$costPerKwh/kWh',
+                                            vehicle: _mockVehicle
+                                          ),
+                                          selectedDate: selectedDate,
+                                          startTime: selectedTime,
+                                          durationMinutes: selectedDuration,
+                                          vehicle: _mockVehicle,
+                                          chargerType: 'Type 2',
+                                          chargerNumber: 1,
+                                          paymentMethod: paymentMethod,
+                                          transactionId: transactionId,
+                                        ),
+                                      ),
+                                    );
+                                  },
+                                ),
+                              ),
+                            );
+                          },
+                        ),
+                      ),
+                    );
+                  },
+                  child: const Text('Proceed to Payment'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    _loadData();
+  }
+
+  @override
+  void dispose() {
+    _searchController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _loadData() async {
+    setState(() => _isLoading = true);
+    try {
+      final products = await _apiService.getProducts();
+      final services = await _apiService.getServices();
+      final locations = await _apiService.getLocations();
+
+      if (mounted) {
+        setState(() {
+          _products = products.map((product) => {
+            'name': product.name,
+            'description': product.description,
+            'price': product.price,
+            'imageUrl': product.imageUrl,
+            'category': product.category,
+            'stockQuantity': product.stockQuantity,
+          }).toList();
+          _services = services;
+          _locations = locations;
+          _isLoading = false;
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error loading data: ${e.toString()}')),
+        );
+        setState(() => _isLoading = false);
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Consumer<AdminProvider>(
+      builder: (context, adminProvider, child) {
+        final filteredStations = _getFilteredStations(adminProvider.stations);
+
+        return Scaffold(
+          appBar: AppBar(
+            backgroundColor: Colors.green,
+            leading: Builder(
+              builder: (context) => IconButton(
+                icon: const Icon(Icons.menu),
+                onPressed: () => Scaffold.of(context).openDrawer(),
+              ),
+            ),
+            // Removed static image from AppBar title. Leaving title blank for now.
+            actions: [
+              Stack(
+                children: [
+                  IconButton(
+                    icon: const Icon(Icons.notifications_outlined),
+                    onPressed: () {
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(builder: (context) => const NotificationsScreen()),
+                      ).then((value) {
+                        // When returning from notifications screen, update the unread count
+                        // In a real app, this would be handled by a state management solution
+                        setState(() {
+                          _unreadNotificationsCount = 0;
+                        });
+                      });
+                    },
+                  ),
+                  if (_unreadNotificationsCount > 0)
+                    Positioned(
+                      right: 0,
+                      top: 0,
+                      child: Container(
+                        padding: const EdgeInsets.all(2),
+                        decoration: BoxDecoration(
+                          color: Colors.red,
+                          borderRadius: BorderRadius.circular(10),
+                        ),
+                        constraints: const BoxConstraints(
+                          minWidth: 18,
+                          minHeight: 18,
+                        ),
+                        child: Text(
+                          '$_unreadNotificationsCount',
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 12,
+                            fontWeight: FontWeight.bold,
+                          ),
+                          textAlign: TextAlign.center,
+                        ),
+                      ),
+                    ),
+                ],
+              ),
+
+              IconButton(
+                icon: const Icon(Icons.account_circle_outlined),
+                onPressed: () {},
+              ),
+            ],
+          ),
+          drawer: Drawer(
+            child: ListView(
+              padding: EdgeInsets.zero,
+              children: [
+                UserAccountsDrawerHeader(
+                  decoration: const BoxDecoration(color: Colors.green),
+                  accountName: Text(widget.currentUser.name),
+                  accountEmail: Text(widget.currentUser.email),
+                  currentAccountPicture: CircleAvatar(
+                    backgroundColor: Colors.white,
+                    child: Icon(
+                      Icons.person,
+                      size: 40,
+                      color: Colors.green,
+                    ),
+                  ),
+                ),
+                ListTile(
+                  leading: const Icon(Icons.settings),
+                  title: const Text('Settings'),
+                  onTap: () {
+                    Navigator.pop(context);
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (context) => UserSettingsScreen(currentUser: widget.currentUser),
+                      ),
+                    );
+                  },
+                ),
+                ListTile(
+                  leading: const Icon(Icons.info),
+                  title: const Text('About'),
+                  onTap: () {
+                    Navigator.pop(context);
+                    Navigator.pushNamed(context, '/about');
+                  },
+                ),
+                ListTile(
+                  leading: const Icon(Icons.help),
+                  title: const Text('Help'),
+                  onTap: () {
+                    Navigator.pop(context);
+                    Navigator.pushNamed(context, '/help');
+                  },
+                ),
+                ListTile(
+                  leading: const Icon(Icons.contact_support),
+                  title: const Text('Contact'),
+                  onTap: () {
+                    Navigator.pop(context);
+                    Navigator.pushNamed(context, '/contact');
+                  },
+                ),
+                const Divider(),
+                ListTile(
+                  leading: const Icon(Icons.logout),
+                  title: const Text('Logout'),
+                  onTap: () {
+                    Navigator.pop(context);
+                    Navigator.pushReplacementNamed(context, '/login');
+                  },
+                ),
+              ],
+            ),
+          ),
+          body: IndexedStack(
+            index: _selectedIndex,
+            children: [
+              _buildHomeContent(),
+              const MapContentWrapper(),
+              _buildProductsSection(),
+              _buildServicesSection(),
+              _buildPaymentsContent(),
+            ],
+          ),
+          floatingActionButton: _cartItems.isNotEmpty ? Container(
+            margin: const EdgeInsets.only(bottom: 15),
+            child: Stack(
+              clipBehavior: Clip.none,
+              children: [
+                FloatingActionButton.extended(
+                  onPressed: () {
+                    _showCartDialog();
+                  },
+                  backgroundColor: Colors.green,
+                  icon: const Icon(Icons.shopping_cart),
+                  label: Text('Cart (${_cartItems.length})'),
+                  elevation: 4,
+                ),
+                Positioned(
+                  right: -5,
+                  top: -5,
+                  child: Container(
+                    padding: const EdgeInsets.all(4),
+                    decoration: BoxDecoration(
+                      color: Colors.red,
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    constraints: const BoxConstraints(
+                      minWidth: 22,
+                      minHeight: 22,
+                    ),
+                    child: Text(
+                      '${_cartItems.length}',
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 12,
+                        fontWeight: FontWeight.bold,
+                      ),
+                      textAlign: TextAlign.center,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ) : null,
+          floatingActionButtonLocation: FloatingActionButtonLocation.endFloat,
+          bottomNavigationBar: BottomNavigationBar(
+            currentIndex: _selectedIndex,
+            selectedItemColor: Colors.green,
+            unselectedItemColor: Colors.grey,
+            type: BottomNavigationBarType.fixed,
+            items: [
+              BottomNavigationBarItem(
+                icon: _selectedIndex == 0
+                    ? const Icon(Icons.home, size: 35)
+                    : const Icon(Icons.home_outlined),
+                label: 'Home',
+              ),
+              const BottomNavigationBarItem(
+                icon: Icon(Icons.map_outlined),
+                label: 'Map',
+              ),
+              const BottomNavigationBarItem(
+                icon: Icon(Icons.production_quantity_limits), //miscellaneous_services_outlined
+                label: 'Products',
+              ),
+              const BottomNavigationBarItem(
+                icon: Icon(Icons.design_services_outlined), //miscellaneous_services_outlined
+                label: 'Services',
+              ),
+              BottomNavigationBarItem(
+                icon: _selectedIndex == 4
+                    ? const Icon(Icons.account_balance_wallet, size: 35)
+                    : const Icon(Icons.account_balance_wallet_outlined),
+                label: 'Payments',
+              ),
+            ],
+            onTap: (index) {
+              setState(() {
+                _selectedIndex = index;
+              });
+            },
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildStatItem(String label, String value, IconData icon) {
+    return Column(
+      children: [
+        Icon(icon, color: Colors.green, size: 24),
+        const SizedBox(height: 8),
+        Text(
+          value,
+          style: const TextStyle(
+            fontSize: 18,
+            fontWeight: FontWeight.bold,
+          ),
+        ),
+        Text(
+          label,
+          style: const TextStyle(
+            fontSize: 12,
+            color: Colors.grey,
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildHomeContent() {
+    return Consumer<AdminProvider>(
+      builder: (context, adminProvider, child) {
+        final stations = _getFilteredStations(adminProvider.stations);
+
+        return SingleChildScrollView(
+          child: Padding(
+            padding: const EdgeInsets.all(16.0),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                // Welcome section
+                Container(
+                  padding: const EdgeInsets.symmetric(vertical: 8.0),
+                  child: Row(
+                    children: [
+                      CircleAvatar(
+                        radius: 25,
+                        backgroundColor: Colors.green.shade100,
+                        child: Text(
+                          widget.currentUser.name.isNotEmpty
+                              ? widget.currentUser.name.trim().split(' ').map((e) => e[0]).take(2).join().toUpperCase()
+                              : '',
+                          style: const TextStyle(
+                            color: Colors.green,
+                            fontWeight: FontWeight.bold,
+                            fontSize: 20,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Text(
+                            'Welcome back,',
+                            style: TextStyle(
+                              fontSize: 14,
+                              color: Colors.grey,
+                            ),
+                          ),
+                          Text(
+                            widget.currentUser.name,
+                            style: const TextStyle(
+                              fontSize: 18,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ],
+                      ),
+                      const Spacer(),
+                    ],
+                  ),
+                ),
+
+                const SizedBox(height: 24),
+
+                // Main heading
+                const Text(
+                  'Find Your Charging Station',
+                  style: TextStyle(
+                    fontSize: 24,
+                    fontWeight: FontWeight.bold,
+                    color: Colors.black87,
+                  ),
+                ),
+
+                const SizedBox(height: 16),
+
+                // Search bar
+                Container(
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(12),
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.grey.withOpacity(0.2),
+                        spreadRadius: 1,
+                        blurRadius: 4,
+                        offset: const Offset(0, 2),
+                      ),
+                    ],
+                  ),
+                  child: TextField(
+                    controller: _searchController,
+                    decoration: InputDecoration(
+                      hintText: 'Search by location or station name',
+                      prefixIcon: const Icon(Icons.search, color: Colors.green),
+                      suffixIcon: IconButton(
+                        icon: const Icon(Icons.filter_list, color: Colors.green),
+                        onPressed: () {
+                          // Show filter options
+                        },
+                      ),
+                      border: InputBorder.none,
+                      contentPadding: const EdgeInsets.symmetric(vertical: 15),
+                    ),
+                    onChanged: (value) {
+                      setState(() {
+                        _searchQuery = value;
+                      });
+                    },
+                  ),
+                ),
+
+                const SizedBox(height: 20),
+
+                // Nearby stations section
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    const Text(
+                      'Nearby Charging Stations',
+                      style: TextStyle(
+                        fontSize: 18,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    TextButton(
+                      onPressed: () {
+                        setState(() {
+                          _selectedIndex = 1; // Switch to map tab
+                        });
+                      },
+                      child: const Text(
+                        'View All',
+                        style: TextStyle(color: Colors.green),
+                      ),
+                    ),
+                  ],
+                ),
+
+                const SizedBox(height: 12),
+
+                // Station list
+                ListView.builder(
+                  shrinkWrap: true,
+                  physics: const NeverScrollableScrollPhysics(),
+                  itemCount: stations.length,
+                  itemBuilder: (context, index) {
+                    final station = stations[index];
+                    return _buildStationCard(station);
+                  },
+                ),
+
+                const SizedBox(height: 24),
+
+                // Plan your route button
+                SizedBox(
+                  width: double.infinity,
+                  child: ElevatedButton.icon(
+                    onPressed: () {
+                      Navigator.of(context).push(
+                        MaterialPageRoute(
+                          builder: (context) => const MapScreen(),
+                        ),
+                      );
+                    },
+                    icon: const Icon(Icons.map),
+                    label: const Text('Plan Your Route'),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.green,
+                      padding: const EdgeInsets.symmetric(vertical: 16),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                    ),
+                  ),
+                ),
+
+                const SizedBox(height: 16),
+
+                // Quick stats section
+                Container(
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    color: Colors.green.withOpacity(0.1),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceAround,
+                    children: [
+                      _buildStatItem('Total Charges', '27', Icons.battery_charging_full),
+                      _buildStatItem('CO₂ Saved', '245 kg', Icons.eco),
+                      _buildStatItem('Favorite Stations', '3', Icons.favorite),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildProductsSection() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              const Text(
+                'Products',
+                style: TextStyle(
+                  fontSize: 20,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+              const SizedBox(),
+            ],
+          ),
+        ),
+        const SizedBox(height: 16),
+        SizedBox(
+          height: 260, // Increased height to accommodate the add to cart button
+          child: _products.isEmpty
+              ? const Center(child: Text('No products available'))
+              : ListView.builder(
+                  scrollDirection: Axis.horizontal,
+                  padding: const EdgeInsets.symmetric(horizontal: 16),
+                  itemCount: _products.length,
+                  itemBuilder: (context, index) {
+                    final product = _products[index];
+                    return Container(
+                      width: 180,
+                      margin: const EdgeInsets.only(right: 16),
+                      decoration: BoxDecoration(
+                        color: Colors.white,
+                        borderRadius: BorderRadius.circular(8),
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.grey.withOpacity(0.1),
+                            spreadRadius: 1,
+                            blurRadius: 4,
+                            offset: const Offset(0, 1),
+                          ),
+                        ],
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          ClipRRect(
+                            borderRadius: const BorderRadius.vertical(
+                              top: Radius.circular(8),
+                            ),
+                            child: Image.network(
+                              product['imageUrl'],
+                              height: 120,
+                              width: double.infinity,
+                              fit: BoxFit.cover,
+                              errorBuilder: (context, error, stackTrace) {
+                                return Container(
+                                  height: 120,
+                                  width: double.infinity,
+                                  color: Colors.grey[200],
+                                  child: const Icon(Icons.error),
+                                );
+                              },
+                            ),
+                          ),
+                          Padding(
+                            padding: const EdgeInsets.all(8),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  product['name'],
+                                  style: const TextStyle(
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                                const SizedBox(height: 4),
+                                Text(
+                                  '\$${product['price'].toStringAsFixed(2)}',
+                                  style: const TextStyle(
+                                    color: Colors.green,
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                ),
+                                const SizedBox(height: 4),
+                                Text(
+                                  'Stock: ${product['stockQuantity']}',
+                                  style: TextStyle(
+                                    color: Colors.grey[600],
+                                    fontSize: 12,
+                                  ),
+                                ),
+                                const SizedBox(height: 8),
+                                SizedBox(
+                                  width: double.infinity,
+                                  child: ElevatedButton.icon(
+                                    onPressed: () {
+                                      setState(() {
+                                        int existingIndex = _cartItems.indexWhere(
+                                            (item) => item['name'] == product['name']);
+
+                                        if (existingIndex >= 0) {
+                                          _cartItems[existingIndex]['quantity'] =
+                                              (_cartItems[existingIndex]['quantity'] ?? 1) + 1;
+                                        } else {
+                                          final cartItem = Map<String, dynamic>.from(product);
+                                          cartItem['quantity'] = 1;
+                                          _cartItems.add(cartItem);
+                                        }
+
+                                        _updateCartItemCount();
+                                      });
+
+                                      ScaffoldMessenger.of(context).showSnackBar(
+                                        SnackBar(
+                                          content: Text('${product['name']} added to cart'),
+                                          duration: const Duration(seconds: 2),
+                                          action: SnackBarAction(
+                                            label: 'VIEW CART',
+                                            onPressed: () {
+                                              _showCartDialog();
+                                            },
+                                          ),
+                                        ),
+                                      );
+                                    },
+                                    icon: const Icon(Icons.add_shopping_cart, size: 18),
+                                    label: const Text('Add to Cart'),
+                                    style: ElevatedButton.styleFrom(
+                                      backgroundColor: Colors.green,
+                                      foregroundColor: Colors.white,
+                                      padding: const EdgeInsets.symmetric(vertical: 8),
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
+                    );
+                  },
+                ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildServicesSection() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Padding(
+          padding: EdgeInsets.symmetric(horizontal: 16),
+          child: Text(
+            'Services',
+            style: TextStyle(
+              fontSize: 20,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+        ),
+        const SizedBox(height: 16),
+        SizedBox(
+          height: 260,
+          child: _services.isEmpty
+              ? const Center(child: Text('No services available'))
+              : ListView.builder(
+                  scrollDirection: Axis.horizontal,
+                  padding: const EdgeInsets.symmetric(horizontal: 16),
+                  itemCount: _services.length,
+                  itemBuilder: (context, index) {
+                    final service = _services[index];
+                    return Container(
+                      width: 180,
+                      margin: const EdgeInsets.only(right: 16),
+                      decoration: BoxDecoration(
+                        color: Colors.white,
+                        borderRadius: BorderRadius.circular(8),
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.grey.withOpacity(0.1),
+                            spreadRadius: 1,
+                            blurRadius: 4,
+                            offset: const Offset(0, 1),
+                          ),
+                        ],
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          ClipRRect(
+                            borderRadius: const BorderRadius.vertical(
+                              top: Radius.circular(8),
+                            ),
+                            child: Image.network(
+                              service.imageUrl,
+                              height: 120,
+                              width: double.infinity,
+                              fit: BoxFit.cover,
+                              errorBuilder: (context, error, stackTrace) {
+                                return Container(
+                                  height: 120,
+                                  width: double.infinity,
+                                  color: Colors.grey[200],
+                                  child: const Icon(Icons.error),
+                                );
+                              },
+                            ),
+                          ),
+                          Padding(
+                            padding: const EdgeInsets.all(8),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  service.name,
+                                  style: const TextStyle(
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                                const SizedBox(height: 4),
+                                Text(
+                                  '\$${service.price.toStringAsFixed(2)}',
+                                  style: const TextStyle(
+                                    color: Colors.green,
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                ),
+                                const SizedBox(height: 4),
+                                Text(
+                                  service.description,
+                                  style: TextStyle(
+                                    color: Colors.grey[600],
+                                    fontSize: 12,
+                                  ),
+                                  maxLines: 2,
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                                const SizedBox(height: 8),
+                                SizedBox(
+                                  width: double.infinity,
+                                  child: ElevatedButton.icon(
+                                    onPressed: () {
+                                      setState(() {
+                                        int existingIndex = _cartItems.indexWhere(
+                                            (item) => item['name'] == service.name);
+
+                                        if (existingIndex >= 0) {
+                                          _cartItems[existingIndex]['quantity'] =
+                                              (_cartItems[existingIndex]['quantity'] ?? 1) + 1;
+                                        } else {
+                                          final cartItem = {
+                                            'name': service.name,
+                                            'price': service.price,
+                                            'description': service.description,
+                                            'quantity': 1,
+                                            'isService': true
+                                          };
+                                          _cartItems.add(cartItem);
+                                        }
+
+                                        _updateCartItemCount();
+                                      });
+
+                                      ScaffoldMessenger.of(context).showSnackBar(
+                                        SnackBar(
+                                          content: Text('${service.name} added to cart'),
+                                          duration: const Duration(seconds: 2),
+                                          action: SnackBarAction(
+                                            label: 'VIEW CART',
+                                            onPressed: () {
+                                              _showCartDialog();
+                                            },
+                                          ),
+                                        ),
+                                      );
+                                    },
+                                    icon: const Icon(Icons.add_shopping_cart, size: 18),
+                                    label: const Text('Add to Cart'),
+                                    style: ElevatedButton.styleFrom(
+                                      backgroundColor: Colors.green,
+                                      foregroundColor: Colors.white,
+                                      padding: const EdgeInsets.symmetric(vertical: 8),
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
+                    );
+                  },
+                ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildPaymentsContent() {
+    return Consumer<TransactionProvider>(
+      builder: (context, transactionProvider, child) {
+        // Format currency values
+        final totalSpent = '\$${transactionProvider.totalSpentThisMonth.toStringAsFixed(2)}';
+        final chargingSpent = '\$${transactionProvider.chargingSpentThisMonth.toStringAsFixed(2)}';
+        final productsSpent = '\$${transactionProvider.productsSpentThisMonth.toStringAsFixed(2)}';
+        final servicesSpent = '\$${transactionProvider.servicesSpentThisMonth.toStringAsFixed(2)}';
+
+        return SingleChildScrollView(
+          child: Padding(
+            padding: const EdgeInsets.all(16.0),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                // Payment Summary Card
+                Container(
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    gradient: const LinearGradient(
+                      colors: [Colors.green, Color(0xFF2E7D32)],
+                      begin: Alignment.topLeft,
+                      end: Alignment.bottomRight,
+                    ),
+                    borderRadius: BorderRadius.circular(16),
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.green.withOpacity(0.3),
+                        blurRadius: 8,
+                        offset: const Offset(0, 4),
+                      ),
+                    ],
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          Text(
+                            'Payment Summary',
+                            style: TextStyle(
+                              color: Colors.white,
+                              fontSize: 18,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                          Icon(Icons.account_balance_wallet, color: Colors.white),
+                        ],
+                      ),
+                      const SizedBox(height: 20),
+                      const Text(
+                        'Total Spent This Month',
+                        style: TextStyle(
+                          color: Colors.white70,
+                          fontSize: 14,
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      Text(
+                        totalSpent,
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 28,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                      const SizedBox(height: 20),
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          _buildPaymentStat('Charging', chargingSpent),
+                          _buildPaymentStat('Products', productsSpent),
+                          _buildPaymentStat('Services', servicesSpent),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+
+                const SizedBox(height: 24),
+
+                // Payment Methods Section
+                const Text(
+                  'Payment Methods',
+                  style: TextStyle(
+                    fontSize: 20,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+                const SizedBox(height: 12),
+
+                // Payment Methods Cards
+                _buildPaymentMethodCard(
+                  icon: Icons.credit_card,
+                  title: 'Credit Card',
+                  subtitle: '**** **** **** 4582',
+                  isDefault: true,
+                ),
+                _buildPaymentMethodCard(
+                  icon: Icons.account_balance,
+                  title: 'Bank Account',
+                  subtitle: '**** 7890',
+                  isDefault: false,
+                ),
+
+                // Add Payment Method Button
+                Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 8.0),
+                  child: OutlinedButton.icon(
+                    onPressed: () {
+                      //_showAddPaymentMethodDialog,  // Use our new method here
+                    },
+                    icon: const Icon(Icons.add, color: Colors.green),
+                    label: const Text(
+                      'Add Payment Method',
+                      style: TextStyle(color: Colors.green),
+                    ),
+                    style: OutlinedButton.styleFrom(
+                      side: const BorderSide(color: Colors.green),
+                      padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                    ),
+                  ),
+                ),
+
+                const SizedBox(height: 24),
+
+                // Transaction History Section
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    const Text(
+                      'Transaction History',
+                      style: TextStyle(
+                        fontSize: 20,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    TextButton(
+                      onPressed: () {
+                        // Navigate to full transaction history
+                      },
+                      child: const Text(
+                        'See All',
+                        style: TextStyle(color: Colors.green),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 12),
+
+                // Transaction List
+                if (transactionProvider.isLoading)
+                  const Center(
+                    child: Padding(
+                      padding: EdgeInsets.all(16.0),
+                      child: CircularProgressIndicator(),
+                    ),
+                  )
+                else if (transactionProvider.recentTransactions.isEmpty)
+                  const Center(
+                    child: Padding(
+                      padding: EdgeInsets.all(16.0),
+                      child: Text('No transactions found'),
+                    ),
+                  )
+                else
+                  ...transactionProvider.recentTransactions.map((transaction) =>
+                    _buildTransactionItem(
+                      transaction: transaction,
+                    )
+                  ).toList(),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildPaymentStat(String label, String value) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          label,
+          style: const TextStyle(
+            color: Colors.white70,
+            fontSize: 14,
+          ),
+        ),
+        const SizedBox(height: 4),
+        Text(
+          value,
+          style: const TextStyle(
+            color: Colors.white,
+            fontSize: 16,
+            fontWeight: FontWeight.bold,
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildPaymentMethodCard({
+    required IconData icon,
+    required String title,
+    required String subtitle,
+    required bool isDefault,
+  }) {
+    return Card(
+      margin: const EdgeInsets.symmetric(vertical: 8),
+      elevation: 2,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(12),
+        side: isDefault
+            ? const BorderSide(color: Colors.green, width: 2)
+            : BorderSide.none,
+      ),
+      child: ListTile(
+        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+        leading: Container(
+          padding: const EdgeInsets.all(8),
+          decoration: BoxDecoration(
+            color: Colors.green.withOpacity(0.1),
+            borderRadius: BorderRadius.circular(8),
+          ),
+          child: Icon(icon, color: Colors.green),
+        ),
+        title: Text(
+          title,
+          style: const TextStyle(fontWeight: FontWeight.bold),
+        ),
+        subtitle: Text(subtitle),
+        trailing: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (isDefault)
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                decoration: BoxDecoration(
+                                  color: Colors.green.withOpacity(0.1),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: const Text(
+                  'Default',
+                  style: TextStyle(
+                    color: Colors.green,
+                    fontSize: 12,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ),
+            IconButton(
+              icon: const Icon(Icons.more_vert),
+              onPressed: () {
+                // Show payment method options
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildTransactionItem({
+    required Transaction transaction,
+  }) {
+    return Card(
+      margin: const EdgeInsets.symmetric(vertical: 6),
+      elevation: 1,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: ListTile(
+        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+        leading: Container(
+          padding: const EdgeInsets.all(8),
+          decoration: BoxDecoration(
+            color: transaction.isCredit ? Colors.green.withOpacity(0.1) : Colors.blue.withOpacity(0.1),
+            borderRadius: BorderRadius.circular(8),
+          ),
+          child: Icon(
+            transaction.icon,
+            color: transaction.isCredit ? Colors.green : Colors.blue,
+          ),
+        ),
+        title: Text(
+          transaction.title,
+          style: const TextStyle(fontWeight: FontWeight.bold),
+        ),
+        subtitle: Text(
+          transaction.formattedDate,
+          style: TextStyle(
+            color: Colors.grey.shade600,
+            fontSize: 12,
+          ),
+        ),
+        trailing: Text(
+          transaction.formattedAmount,
+          style: TextStyle(
+            color: transaction.isCredit ? Colors.green : Colors.black87,
+            fontWeight: FontWeight.bold,
+            fontSize: 16,
+          ),
+        ),
+        onTap: () {
+          // Show transaction details
+          _showTransactionDetails(transaction);
+        },
+      ),
+    );
+  }
+
+  void _showCartDialog() {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Row(
+          children: [
+            Icon(Icons.shopping_cart, color: Colors.green),
+            SizedBox(width: 10),
+            Text('My Cart'),
+          ],
+        ),
+        content: SizedBox(
+          width: double.maxFinite,
+          child: _cartItems.isEmpty
+              ? const Center(
+                  child: Text(
+                    'Your cart is empty',
+                    style: TextStyle(fontSize: 16),
+                  ),
+                )
+              : ListView.builder(
+                  shrinkWrap: true,
+                  itemCount: _cartItems.length,
+                  itemBuilder: (context, index) {
+                    final item = _cartItems[index];
+                    final quantity = item['quantity'] as int? ?? 1;
+                    final price = item['price'] as double;
+                    final totalPrice = quantity * price;
+
+                    return ListTile(
+                      contentPadding: EdgeInsets.zero,
+                      leading: Container(
+                        width: 40,
+                        height: 40,
+                        decoration: BoxDecoration(
+                          color: Colors.green.withOpacity(0.1),
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: Icon(
+                          item['isService'] == true ? Icons.build : Icons.electric_car,
+                          color: Colors.green
+                        ),
+                      ),
+                      title: Text(
+                        item['name'],
+                        style: const TextStyle(fontWeight: FontWeight.bold),
+                      ),
+                      subtitle: Text('\$${price.toStringAsFixed(2)} × $quantity'),
+                      trailing: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Text(
+                            '\$${totalPrice.toStringAsFixed(2)}',
+                            style: const TextStyle(fontWeight: FontWeight.bold),
+                          ),
+                          IconButton(
+                            icon: const Icon(Icons.delete, color: Colors.red, size: 20),
+                            onPressed: () {
+                              setState(() {
+                                _cartItems.removeAt(index);
+                              });
+                              Navigator.pop(context);
+                              if (_cartItems.isNotEmpty) {
+                                _showCartDialog(); // Reopen dialog to refresh
+                              }
+                            },
+                          ),
+                        ],
+                      ),
+                    );
+                  },
+                ),
+        ),
+        actions: [
+          if (_cartItems.isNotEmpty) ...[
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Text(
+                  'Total: \$${_cartItems.fold(0.0, (sum, item) => sum + (item['price'] as double) * (item['quantity'] as int? ?? 1)).toStringAsFixed(2)}',
+                  style: const TextStyle(
+                    fontWeight: FontWeight.bold,
+                    fontSize: 16,
+                  ),
+                ),
+                TextButton(
+                  onPressed: () {
+                    setState(() {
+                      _cartItems.clear();
+                    });
+                    Navigator.pop(context);
+                  },
+                  child: const Text('CLEAR CART', style: TextStyle(color: Colors.red)),
+                ),
+              ],
+            ),
+            ElevatedButton(
+              onPressed: () {
+                Navigator.pop(context);
+                Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder: (context) => PaymentScreen(
+                      initialAmount: _calculateTotal(),
+                      description: 'Service booking',
+                      serviceId: '1',
+                      serviceName: 'Car Wash Service',
+                      transactionType: TransactionType.service,
+                      onPaymentSuccess: (amount, transactionId, paymentMethod) {
+                        Navigator.of(context).push(
+                          MaterialPageRoute(
+                            builder: (context) => PaymentConfirmationScreen(
+                              amount: amount,
+                              transactionId: transactionId,
+                              paymentDate: DateTime.now(),
+                              paymentMethod: paymentMethod,
+                              onContinue: () {
+                                Navigator.of(context).push(
+                                  MaterialPageRoute(
+                                    builder: (context) => OrderConfirmationScreen(
+                                      cartItems: List<Map<String, dynamic>>.from(_cartItems),
+                                      amount: amount,
+                                      orderDate: DateTime.now(),
+                                    ),
+                                  ),
+                                );
+                                setState(() {
+                                  _cartItems.clear();
+                                });
+                              },
+                            ),
+                          ),
+                        );
+                      },
+                    ),
+                  ),
+                );
+              },
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.green,
+                minimumSize: const Size(double.infinity, 45),
+              ),
+              child: const Text('CHECKOUT'),
+            ),
+          ] else
+            TextButton(
+              onPressed: () {
+                Navigator.pop(context);
+              },
+              child: const Text('CLOSE'),
+            ),
+        ],
+      ),
+    );
+  }
+
+  void _updateCartItemCount() {
+    setState(() {
+      // Cart count is just the number of items in the cart
+      // No need for a separate count variable
+    });
+  }
+
+  Widget _buildStationCard(ChargingStation station) {
+    return Card(
+      margin: const EdgeInsets.only(bottom: 16),
+      elevation: 2,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Row(
+          children: [
+            // Station image or icon
+            Container(
+              width: 70,
+              height: 70,
+              decoration: BoxDecoration(
+                color: Colors.green.withOpacity(0.1),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: const Icon(
+                Icons.ev_station,
+                size: 40,
+                color: Colors.green,
+              ),
+            ),
+
+            const SizedBox(width: 12),
+
+            // Station details
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          station.name,
+                          style: const TextStyle(
+                            fontWeight: FontWeight.bold,
+                            fontSize: 16,
+                          ),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                        decoration: BoxDecoration(
+                          color: _getStatusColor(station.status),
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: Text(
+                          _getStatusText(station.status),
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 12,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+
+                  const SizedBox(height: 4),
+
+                  Text(
+                    'Power: ${station.powerKw} kW',
+                    style: TextStyle(
+                      color: Colors.grey.shade600,
+                      fontSize: 14,
+                    ),
+                  ),
+
+                  const SizedBox(height: 4),
+
+                  Row(
+                    children: [
+                      Icon(Icons.location_on, size: 14, color: Colors.grey.shade600),
+                      const SizedBox(width: 4),
+                      Text(
+                        station.address,
+                        style: TextStyle(
+                          color: Colors.grey.shade600,
+                          fontSize: 14,
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Icon(Icons.bolt, size: 14, color: Colors.grey.shade600),
+                      const SizedBox(width: 4),
+                      Text(
+                        '\$${station.pricePerKwh.toStringAsFixed(2)}/kWh',
+                        style: TextStyle(
+                          color: Colors.grey.shade600,
+                          fontSize: 14,
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+
+            // Navigation button
+            IconButton(
+              icon: const Icon(Icons.navigate_next, color: Colors.green),
+              onPressed: () async {
+                if (station.status == StationStatus.available) {
+                  final timeSlot = await _showTimeSlotPicker(context);
+                  if (timeSlot != null) {
+                  // First navigate to payment method selection
+                  Navigator.of(context).push(
+                    MaterialPageRoute(
+                      builder: (context) => PaymentScreen(
+                        initialAmount: _calculateTotal(),
+                        description: 'Product purchase',
+                        productId: 'P001',
+                        productName: 'EV Accessories',
+                        transactionType: TransactionType.product,
+                        onPaymentSuccess: (amount, transactionId, paymentMethod) {
+                          // Then navigate to payment confirmation
+                          Navigator.of(context).push(
+                            MaterialPageRoute(
+                              builder: (context) => PaymentConfirmationScreen(
+                                amount: amount,
+                                transactionId: transactionId,
+                                paymentDate: DateTime.now(),
+                                paymentMethod: paymentMethod,
+                                onContinue: () {
+                                  // Finally navigate to booking confirmation
+                                  Navigator.of(context).push(
+                                    MaterialPageRoute(
+                                      builder: (context) => BookingConfirmationScreen(
+                                        selectedDate: timeSlot['date'] as DateTime,
+                                        startTime: timeSlot['time'] as TimeOfDay,
+                                        durationMinutes: timeSlot['duration'] as int,
+                                        station: Station(
+                                          id: station.id,
+                                          name: station.name,
+                                          address: station.address,
+                                          latitude: station.latitude,
+                                          longitude: station.longitude,
+                                          imageUrl: '',
+                                          availableChargerTypes: station.connectorTypes.map((t) => t.toString()).toList(),
+                                          totalChargers: 1,
+                                          availableChargers: 1,
+                                          rating: 0.0,
+                                          reviewCount: 0,
+                                          amenities: [],
+                                          operatingHours: '24/7',
+                                          available: true,
+                                          type: 'EV Charger',
+                                          distance: 'N/A',
+                                          price: '\$${station.pricePerKwh.toStringAsFixed(2)}/kWh',
+                                          vehicle: _mockVehicle,
+                                        ),
+
+                                        vehicle: _mockVehicle,
+                                        chargerType: station.connectorTypes.isNotEmpty
+                                            ? station.connectorTypes.first.toString()
+                                            : 'Type 2',
+                                        chargerNumber: 1,
+                                      ),
+                                    ),
+                                  );
+                                },
+                              ),
+                            ),
+                          );
+                        },
+                      ),
+                    ),
+                  );
+                  }
+                } else {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text('This station is currently not available'),
+                      backgroundColor: Colors.red,
+                    ),
+                  );
+                }
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildFilterChip(String label) {
+    final isSelected = _selectedFilter == label;
+
+    return Padding(
+      padding: const EdgeInsets.only(right: 8.0),
+      child: ChoiceChip(
+        label: Text(label),
+        selected: isSelected,
+        selectedColor: Colors.green,
+        backgroundColor: Colors.grey.shade200,
+        labelStyle: TextStyle(
+          color: isSelected ? Colors.white : Colors.black87,
+          fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+        ),
+        onSelected: (selected) {
+          setState(() {
+            _selectedFilter = label;
+          });
+        },
+      ),
+    );
+  }
+
+  List<ChargingStation> _getFilteredStations(List<ChargingStation> stations) {
+    // First filter by search query
+    var filteredStations = stations.where((station) {
+      final searchLower = _searchQuery.toLowerCase();
+      return station.name.toLowerCase().contains(searchLower) ||
+             station.address.toLowerCase().contains(searchLower);
+    }).toList();
+
+    // Then apply the selected filter
+    if (_selectedFilter == 'All') {
+      return filteredStations;
+    } else if (_selectedFilter == 'Available Now') {
+      return filteredStations.where((s) => s.status == StationStatus.available).toList();
+    } else if (_selectedFilter == 'DC Fast') {
+      return filteredStations.where((s) => s.powerKw >= 50).toList();
+    } else if (_selectedFilter == 'Level 2') {
+      return filteredStations.where((s) => s.powerKw < 50).toList();
+    } else if (_selectedFilter == 'Free') {
+      return filteredStations.where((s) => s.pricePerKwh == 0).toList();
+    } else if (_selectedFilter == 'Tesla') {
+      return filteredStations.where((s) => s.connectorTypes.contains(ConnectorType.tesla)).toList();
+    }
+    return filteredStations;
+  }
+
+  Color _getStatusColor(StationStatus status) {
+    switch (status) {
+      case StationStatus.available:
+        return Colors.green;
+      case StationStatus.inUse:
+        return Colors.orange;
+      case StationStatus.outOfService:
+        return Colors.red;
+      case StationStatus.underMaintenance:
+        return Colors.purple;
+    }
+  }
+
+  String _getStatusText(StationStatus status) {
+    switch (status) {
+      case StationStatus.available:
+        return 'Available';
+      case StationStatus.inUse:
+        return 'In Use';
+      case StationStatus.outOfService:
+        return 'Out of Service';
+      case StationStatus.underMaintenance:
+        return 'Under Maintenance';
+    }
+  }
+
+  double _calculateTotal() {
+    double total = 0.0;
+    for (var item in _cartItems) {
+      if (item['isService'] == true) {
+        total += item['price'] as double;
+      } else {
+        total += (item['price'] as double) * (item['quantity'] as int? ?? 1);
+      }
+    }
+    return total;
+  }
+
+  void _showTransactionDetails(Transaction transaction) {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Row(
+          children: [
+            Container(
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(
+                color: transaction.isCredit ? Colors.green.withOpacity(0.1) : Colors.blue.withOpacity(0.1),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Icon(
+                transaction.icon,
+                color: transaction.isCredit ? Colors.green : Colors.blue,
+              ),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                'Transaction Details',
+                style: const TextStyle(fontSize: 18),
+              ),
+            ),
+          ],
+        ),
+        content: SingleChildScrollView(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              _buildTransactionDetailRow('Title', transaction.title),
+              _buildTransactionDetailRow('Description', transaction.description),
+              _buildTransactionDetailRow('Amount', transaction.formattedAmount),
+              _buildTransactionDetailRow('Date', transaction.formattedDate),
+              _buildTransactionDetailRow('Payment Method', _formatPaymentMethod(transaction.paymentMethod)),
+              _buildTransactionDetailRow('Transaction ID', transaction.id),
+              if (transaction.stationName != null)
+                _buildTransactionDetailRow('Station', transaction.stationName!),
+              if (transaction.productName != null)
+                _buildTransactionDetailRow('Product', transaction.productName!),
+              if (transaction.serviceName != null)
+                _buildTransactionDetailRow('Service', transaction.serviceName!),
+              _buildTransactionDetailRow('Status', _formatStatus(transaction.status)),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('CLOSE'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  String _formatPaymentMethod(String method) {
+    switch (method.toLowerCase()) {
+      case 'card':
+        return 'Credit/Debit Card';
+      case 'upi':
+        return 'UPI Payment';
+      case 'cash':
+        return 'Cash Payment';
+      case 'reward':
+        return 'Reward Points';
+      default:
+        return method;
+    }
+  }
+
+  String _formatStatus(TransactionStatus status) {
+    switch (status) {
+      case TransactionStatus.completed:
+        return 'Completed';
+      case TransactionStatus.pending:
+        return 'Pending';
+      case TransactionStatus.failed:
+        return 'Failed';
+      case TransactionStatus.refunded:
+        return 'Refunded';
+      default:
+        return 'Unknown';
+    }
+  }
+
+  Widget _buildTransactionDetailRow(String label, String value) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 8.0),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            label,
+            style: TextStyle(
+              color: Colors.grey.shade600,
+              fontSize: 12,
+            ),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            value,
+            style: const TextStyle(
+              fontSize: 16,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
